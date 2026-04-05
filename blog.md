@@ -1,0 +1,297 @@
+# Building a Bidirectional Slack Bridge for Cortex Code CLI
+
+Cortex Code is Snowflake's AI coding agent that runs in your terminal. It reads files, writes code, executes SQL, manages git repos -- the works. But there's a catch: when it needs your permission to do something destructive (like dropping a table or deploying to production), it blocks and waits for you to type "yes" in the terminal.
+
+What if you're not at your desk? What if you kicked off a long pipeline and walked away?
+
+That's why I built this Slack bridge. It routes those confirmation prompts to your phone as Approve/Deny buttons. You tap a button from the couch, Cortex Code picks up the response, and keeps going. You can also send it free-text instructions from Slack -- "skip that step and move to the next one" -- without touching the terminal.
+
+The whole thing runs as a ~300-line Python sidecar. No servers, no databases, no cloud infra. Just a Slack bot, some JSON files, and a shell wrapper.
+
+## What It Actually Does
+
+Three interaction patterns:
+
+1. **Notifications** -- Cortex Code sends you status updates as Slack DMs. "Feature engineering done. Model training starting." You see them on your phone.
+
+2. **Approve/Deny** -- When Cortex Code needs permission for something dangerous, it sends a message with two buttons. You tap Approve or Deny. The CLI session picks up your response and acts accordingly.
+
+3. **Free-text replies** -- You type a message in the Slack DM. It lands in a session-specific inbox file. Cortex Code's cron job picks it up and treats it as user input.
+
+The "bypass safeguards" angle is worth calling out explicitly: Cortex Code has a built-in tool confirmation system. When the agent wants to run a bash command, execute SQL, or write to a file, it can pause and ask for approval. Normally that requires you sitting at the terminal. This bridge effectively lets you approve those actions remotely -- which is powerful but means you should understand what you're approving. The Slack message includes the full context (the SQL statement, the file path, etc.), so you can make an informed decision from your phone.
+
+## Architecture
+
+```
+┌─────────────────┐     ┌──────────────────────┐     ┌─────────────┐
+│  Cortex Code    │     │   Bridge Bot          │     │   Slack     │
+│  CLI Session    │     │   (Socket Mode)       │     │   DM        │
+│                 │     │                       │     │             │
+│  coco-bridge ───┼────>│  notify.py            │────>│  Message    │
+│  send/confirm   │     │  (sends DMs/buttons)  │     │  appears    │
+│                 │     │                       │     │             │
+│  inbox.json <───┼─────│  bridge.py            │<────│  User taps  │
+│  (cron polls)   │     │  (listens for events) │     │  or replies │
+└─────────────────┘     └──────────────────────┘     └─────────────┘
+```
+
+**Key design decisions:**
+
+- **Socket Mode** -- No public URLs needed. The bot connects outbound to Slack's WebSocket API. Works behind firewalls, no ngrok required.
+- **File-based inbox** -- Each Cortex Code session gets its own `inbox_{session_id}.json`. The bridge bot writes to it; the CLI polls it via cron. Dead simple, zero dependencies.
+- **Metadata routing** -- Every outbound Slack message includes session metadata. When you tap a button or reply, Slack sends that metadata back. The bridge uses it to write to the correct session's inbox. Multiple sessions, no crosstalk.
+- **Sidecar process** -- The bridge bot runs as a background process, started automatically by a SessionStart hook. It's not embedded in Cortex Code -- it's a separate Python process that communicates via the filesystem.
+
+## The Code
+
+The project has four main files. Here's what each does.
+
+### `config.py` -- Configuration and Session Management
+
+Handles paths, tokens, and multi-session routing.
+
+```python
+BRIDGE_DIR = Path.home() / ".cortex-slack-bridge"
+INBOX_FILE = BRIDGE_DIR / "inbox.json"
+PID_FILE = BRIDGE_DIR / "bridge.pid"
+```
+
+Tokens come from environment variables first (`SLACK_BRIDGE_APP_TOKEN`, `SLACK_BRIDGE_BOT_TOKEN`), falling back to a JSON config file at `~/.cortex-slack-bridge/config.json`. The config file approach is easier for local dev; env vars are better for anything automated.
+
+Session management is minimal: `get_session_inbox()` returns the inbox path for a session ID, and `set_active_session()` / `get_active_session()` track which session the bridge should route messages to when there's no metadata to go on.
+
+### `bridge.py` -- The Socket Mode Bot
+
+This is the long-running process. It connects to Slack via Socket Mode and listens for two things:
+
+**DM messages** -- When you type in the Slack DM, it captures the text and writes it to the active session's inbox:
+
+```python
+@app.event("message")
+def handle_dm(event, say):
+    user = event.get("user")
+    if subtype or user != target_user:
+        return
+    _append_inbox({
+        "type": "reply",
+        "text": event.get("text", ""),
+        ...
+    })
+    say("Message sent to CoCo CLI. Awaiting response...")
+```
+
+**Button clicks** -- Approve and Deny buttons trigger action handlers that extract the `confirmation_id` from the block ID and the `session_id` from message metadata, then write the response to the correct inbox:
+
+```python
+@app.action("confirm_approve")
+def handle_approve(ack, body, client):
+    ack()
+    action_id = _extract_confirmation_id(body)
+    session_id = _extract_session_id(body, client)
+    _append_inbox({
+        "type": "confirmation",
+        "confirmation_id": action_id,
+        "response": "approved",
+        ...
+    }, session_id=session_id)
+    _update_confirmation_message(client, body, "Approved ✓")
+```
+
+After a button click, the original message gets updated to show the result (replacing the buttons with "Approved ✓" or "Denied ✗"). This prevents double-clicks and gives you visual confirmation.
+
+### `notify.py` -- Sending Messages and Confirmations
+
+This is the outbound side. Two main functions:
+
+**`send_message()`** -- Sends a plain DM or a color-coded message (blue for status, green for success, yellow for warnings, red for errors). Every message includes session metadata so replies route back correctly:
+
+```python
+metadata = {
+    "event_type": "cortex_bridge",
+    "event_payload": {"session_id": sid},
+}
+```
+
+**`send_confirmation()`** -- Sends Approve/Deny buttons and then polls the inbox waiting for a response. This is a blocking call -- it sits in a loop checking the inbox file until the user clicks a button or the timeout expires:
+
+```python
+def send_confirmation(question, *, confirmation_id, timeout=300):
+    # Send buttons to Slack
+    send_message(question, blocks=[...buttons...])
+    # Poll inbox until response arrives
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        result = _pop_confirmation(confirmation_id)
+        if result:
+            return result["response"]  # "approved" or "denied"
+        time.sleep(2)
+    raise TimeoutError(...)
+```
+
+### `bin/coco-bridge` -- The Shell Wrapper
+
+A bash script that makes everything easy to use from Cortex Code's skill system:
+
+```bash
+coco-bridge start              # Start the bridge bot
+coco-bridge stop               # Stop it
+coco-bridge status             # Check if running
+coco-bridge send "message"     # Send a DM
+coco-bridge send "msg" --type success  # Color-coded
+coco-bridge confirm "question" # Approve/Deny buttons
+coco-bridge inbox              # Read inbox contents
+coco-bridge logs               # Tail the log file
+```
+
+It auto-detects the project's virtualenv, manages the PID file, and dispatches to the Python modules.
+
+## How It Integrates with Cortex Code
+
+The bridge plugs into Cortex Code through two mechanisms:
+
+### 1. SessionStart Hook
+
+A hook in `~/.snowflake/cortex/hooks.json` runs on every new session. It checks if the bridge bot is running and starts it if not:
+
+```bash
+#!/usr/bin/env bash
+PROJECT_DIR="$HOME/Apps/cortex-code-cli-slack-bridge"
+PYTHON="$PROJECT_DIR/.venv/bin/python"
+
+if ! _is_running; then
+    nohup "$PYTHON" -m cortex_slack_bridge.bridge >> "$LOG_FILE" 2>&1 &
+fi
+```
+
+### 2. Cortex Code Skill
+
+A skill definition (SKILL.md) teaches Cortex Code how to use the bridge. When you say "slack on", it:
+
+1. Creates a cron job that polls the inbox every minute
+2. Sends an activation message to Slack
+3. Starts routing questions and confirmations through Slack instead of the terminal
+
+The skill also handles "slack off" to disable the bridge mid-session, and defines when to use notifications vs. confirmations vs. free-text questions.
+
+## Setting It Up
+
+### Prerequisites
+
+- Python 3.10+
+- A Slack workspace where you can install apps
+- [Cortex Code CLI](https://docs.snowflake.com/en/user-guide/snowflake-cortex/cortex-code)
+
+### Create the Slack App
+
+1. Go to [api.slack.com/apps](https://api.slack.com/apps) and create a new app
+2. Under **Socket Mode**, enable it and create an App-Level Token with `connections:write` scope. Save the `xapp-...` token.
+3. Under **OAuth & Permissions**, add these Bot Token Scopes:
+   - `chat:write` -- send DMs
+   - `im:history` -- read DM history
+   - `im:read` -- view DM channels
+   - `im:write` -- open DM channels
+4. Under **Event Subscriptions**, enable events and subscribe to the `message.im` bot event
+5. Under **Interactivity & Shortcuts**, enable interactivity (no URL needed for Socket Mode)
+6. Install the app to your workspace. Copy the Bot User OAuth Token (`xoxb-...`).
+7. Find your Slack User ID: click your profile picture in Slack, click the three dots, "Copy member ID"
+
+### Install the Bridge
+
+```bash
+git clone https://github.com/iamontheinet/cortex-code-cli-slack-bridge.git \
+    ~/Apps/cortex-code-cli-slack-bridge
+cd ~/Apps/cortex-code-cli-slack-bridge
+python3 -m venv .venv
+.venv/bin/pip install -e .
+```
+
+### Configure Tokens
+
+```bash
+mkdir -p ~/.cortex-slack-bridge
+cp config.json.example ~/.cortex-slack-bridge/config.json
+```
+
+Edit `~/.cortex-slack-bridge/config.json` with your actual tokens:
+
+```json
+{
+  "app_token": "xapp-1-A0...",
+  "bot_token": "xoxb-...",
+  "user_id": "U02M..."
+}
+```
+
+### Start and Test
+
+```bash
+# Start the bridge
+bin/coco-bridge start
+
+# Send a test message
+bin/coco-bridge send "Hello from the bridge!"
+
+# Test confirmation buttons
+bin/coco-bridge confirm "Test confirmation -- approve or deny?" --id test-1 --timeout 60
+```
+
+Check your Slack DMs. You should see the messages and buttons.
+
+### Wire Up the SessionStart Hook
+
+Add this to `~/.snowflake/cortex/hooks.json` so the bridge auto-starts with every Cortex Code session:
+
+```json
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/Users/YOUR_USERNAME/.cortex-slack-bridge/start-hook.sh",
+            "timeout": 10,
+            "enabled": true
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Copy the start hook script:
+
+```bash
+cp demo-start-hook.sh ~/.cortex-slack-bridge/start-hook.sh
+chmod +x ~/.cortex-slack-bridge/start-hook.sh
+```
+
+## The Demo
+
+The repo includes `demo.sh` which walks through all three interaction patterns:
+
+1. **Approve** -- Asks to drop a staging table. You tap Approve in Slack.
+2. **Deny** -- Asks to deploy a model to production. You tap Deny.
+3. **Free-text** -- Sends a status update and asks for instructions. You type a reply.
+
+```bash
+bash ~/Apps/cortex-code-cli-slack-bridge/demo.sh
+```
+
+It's interactive -- the script pauses between scenarios so you can follow along on your phone.
+
+## Things I'd Do Differently
+
+A few rough edges and ideas for v2:
+
+- **Polling is crude** -- The cron job checks the inbox every minute. A WebSocket or file watcher would be more responsive, but the simplicity of cron-based polling won out for v1.
+- **No encryption** -- Inbox files are plain JSON on disk. The tokens in config.json are also plain text. For a personal tool on your own machine this is fine; for anything shared, you'd want keychain integration or Cortex secret injection.
+- **Single user only** -- The bridge is hardcoded to one Slack user ID. Multi-user support would need a mapping layer.
+- **No message history** -- Inbox entries are consumed and deleted. If you wanted an audit trail, you'd log them somewhere persistent.
+
+## Wrapping Up
+
+The whole project is ~300 lines of Python plus a shell wrapper. It turns Cortex Code from a "sit at your desk" tool into something you can supervise from your phone. The Approve/Deny pattern is especially useful -- you can kick off a big migration, walk away, and approve each destructive step from Slack as the agent reaches it.
+
+The code is at [github.com/iamontheinet/cortex-code-cli-slack-bridge](https://github.com/iamontheinet/cortex-code-cli-slack-bridge). Clone it, plug in your Slack tokens, and try the demo.
