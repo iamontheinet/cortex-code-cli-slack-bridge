@@ -1,0 +1,117 @@
+"""Configuration for cortex-slack-bridge."""
+
+import json
+import os
+from pathlib import Path
+
+# ---------------------------------------------------------------------------
+# Paths
+# ---------------------------------------------------------------------------
+BRIDGE_DIR = Path.home() / ".cortex-slack-bridge"
+INBOX_FILE = BRIDGE_DIR / "inbox.json"  # legacy single-session fallback
+PID_FILE = BRIDGE_DIR / "bridge.pid"
+LOG_FILE = BRIDGE_DIR / "bridge.log"
+ACTIVE_SESSION_FILE = BRIDGE_DIR / "active_session"
+
+# ---------------------------------------------------------------------------
+# Slack tokens
+#
+# Preferred: set via environment variables (Cortex secret injection).
+#   SLACK_BRIDGE_APP_TOKEN  — xapp-... (Socket Mode)
+#   SLACK_BRIDGE_BOT_TOKEN  — xoxb-... (Bot API calls)
+#
+# Fallback: a JSON config file at ~/.cortex-slack-bridge/config.json
+#   { "app_token": "xapp-...", "bot_token": "xoxb-...", "user_id": "U..." }
+# ---------------------------------------------------------------------------
+CONFIG_FILE = BRIDGE_DIR / "config.json"
+
+
+def _load_file_config() -> dict:
+    """Load optional JSON config file."""
+    if CONFIG_FILE.exists():
+        with open(CONFIG_FILE) as f:
+            return json.load(f)
+    return {}
+
+
+def get_app_token() -> str:
+    """Return the Slack App-Level token (xapp-...) for Socket Mode."""
+    token = os.environ.get("SLACK_BRIDGE_APP_TOKEN")
+    if token:
+        return token
+    token = _load_file_config().get("app_token")
+    if token:
+        return token
+    raise RuntimeError(
+        "Missing SLACK_BRIDGE_APP_TOKEN. Set the env var or add "
+        "'app_token' to ~/.cortex-slack-bridge/config.json"
+    )
+
+
+def get_bot_token() -> str:
+    """Return the Slack Bot token (xoxb-...) for API calls."""
+    token = os.environ.get("SLACK_BRIDGE_BOT_TOKEN")
+    if token:
+        return token
+    token = _load_file_config().get("bot_token")
+    if token:
+        return token
+    raise RuntimeError(
+        "Missing SLACK_BRIDGE_BOT_TOKEN. Set the env var or add "
+        "'bot_token' to ~/.cortex-slack-bridge/config.json"
+    )
+
+
+def get_user_id() -> str:
+    """Return your Slack user ID (U...) for DM targeting."""
+    uid = os.environ.get("SLACK_BRIDGE_USER_ID")
+    if uid:
+        return uid
+    uid = _load_file_config().get("user_id")
+    if uid:
+        return uid
+    raise RuntimeError(
+        "Missing SLACK_BRIDGE_USER_ID. Set the env var or add "
+        "'user_id' to ~/.cortex-slack-bridge/config.json"
+    )
+
+
+def ensure_dirs():
+    """Create the bridge directory if it doesn't exist."""
+    BRIDGE_DIR.mkdir(parents=True, exist_ok=True)
+
+
+# ---------------------------------------------------------------------------
+# Session management — multi-session inbox routing
+# ---------------------------------------------------------------------------
+
+def get_session_id() -> str:
+    """Return the current Cortex Code session ID, or 'default'."""
+    return os.environ.get("CORTEX_SESSION_ID", "default")
+
+
+def get_session_inbox(session_id: str | None = None) -> Path:
+    """Return the inbox path for a specific session.
+
+    Falls back to INBOX_FILE for session_id='default' (backward compat).
+    """
+    sid = session_id or get_session_id()
+    if sid == "default":
+        return INBOX_FILE
+    return BRIDGE_DIR / f"inbox_{sid}.json"
+
+
+def get_active_session() -> str:
+    """Return the most recently active session ID."""
+    if ACTIVE_SESSION_FILE.exists():
+        try:
+            return ACTIVE_SESSION_FILE.read_text().strip()
+        except OSError:
+            pass
+    return "default"
+
+
+def set_active_session(session_id: str):
+    """Mark a session as the most recently active."""
+    ensure_dirs()
+    ACTIVE_SESSION_FILE.write_text(session_id)

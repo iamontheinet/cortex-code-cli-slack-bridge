@@ -1,0 +1,13 @@
+[project]
+name = "cortex-code-cli-slack-bridge"
+version = "0.1.0"
+description = "Bidirectional Slack DM bridge for Cortex Code — get notifications and respond remotely"
+requires-python = ">=3.10"
+dependencies = [
+    "slack-bolt>=1.18.0",
+    "slack-sdk>=3.27.0",
+]
+
+[project.scripts]
+coco-notify = "cortex_slack_bridge.notify:main"
+coco-bridge = "cortex_slack_bridge.bridge:main"

@@ -1,0 +1,160 @@
+#!/usr/bin/env bash
+# coco-bridge — convenience wrapper for the Cortex Code Slack Bridge
+#
+# Usage:
+#   coco-bridge start              Start the bridge bot in the background
+#   coco-bridge stop               Stop the bridge bot
+#   coco-bridge status             Check if the bridge is running
+#   coco-bridge send "message"     Send a plain notification
+#   coco-bridge send "msg" --type status  Send color-coded (status|success|warning|error)
+#   coco-bridge confirm "question" Send confirmation buttons (blocks until response)
+#   coco-bridge logs               Tail the bridge log
+#   coco-bridge inbox              Show current inbox contents
+
+set -euo pipefail
+
+BRIDGE_DIR="$HOME/.cortex-slack-bridge"
+PID_FILE="$BRIDGE_DIR/bridge.pid"
+LOG_FILE="$BRIDGE_DIR/bridge.log"
+SESSION_ID="${CORTEX_SESSION_ID:-default}"
+INBOX_FILE="$BRIDGE_DIR/inbox_${SESSION_ID}.json"
+# Legacy fallback for session_id=default
+if [[ "$SESSION_ID" == "default" ]]; then
+    INBOX_FILE="$BRIDGE_DIR/inbox.json"
+fi
+
+# Resolve the Python that has cortex-slack-bridge installed.
+# Prefer the venv in the project dir, fall back to system python3.
+PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+if [[ -x "$PROJECT_DIR/.venv/bin/python" ]]; then
+    PYTHON="$PROJECT_DIR/.venv/bin/python"
+else
+    PYTHON="python3"
+fi
+
+_ensure_dir() { mkdir -p "$BRIDGE_DIR"; }
+
+_is_running() {
+    if [[ -f "$PID_FILE" ]]; then
+        local pid
+        pid=$(<"$PID_FILE")
+        if kill -0 "$pid" 2>/dev/null; then
+            return 0
+        fi
+        # Stale PID file
+        rm -f "$PID_FILE"
+    fi
+    return 1
+}
+
+cmd_start() {
+    _ensure_dir
+    if _is_running; then
+        echo "Bridge already running (PID $(<"$PID_FILE"))"
+        return 0
+    fi
+    echo "Starting Cortex Code Slack Bridge..."
+    nohup "$PYTHON" -m cortex_slack_bridge.bridge >> "$LOG_FILE" 2>&1 &
+    local pid=$!
+    # Give it a moment to write its own PID file and connect
+    sleep 2
+    if kill -0 "$pid" 2>/dev/null; then
+        echo "Bridge started (PID $pid)"
+        echo "Logs: $LOG_FILE"
+    else
+        echo "Bridge failed to start. Check logs:" >&2
+        tail -20 "$LOG_FILE" >&2
+        return 1
+    fi
+}
+
+cmd_stop() {
+    if ! _is_running; then
+        echo "Bridge is not running."
+        return 0
+    fi
+    local pid
+    pid=$(<"$PID_FILE")
+    echo "Stopping bridge (PID $pid)..."
+    kill "$pid" 2>/dev/null || true
+    # Wait for clean exit
+    for _ in $(seq 1 10); do
+        if ! kill -0 "$pid" 2>/dev/null; then
+            rm -f "$PID_FILE"
+            echo "Bridge stopped."
+            return 0
+        fi
+        sleep 0.5
+    done
+    # Force kill
+    kill -9 "$pid" 2>/dev/null || true
+    rm -f "$PID_FILE"
+    echo "Bridge force-stopped."
+}
+
+cmd_status() {
+    if _is_running; then
+        echo "Bridge is running (PID $(<"$PID_FILE"))"
+    else
+        echo "Bridge is not running."
+    fi
+}
+
+cmd_send() {
+    if [[ $# -lt 1 ]]; then
+        echo "Usage: coco-bridge send \"message\" [--type status|success|warning|error]" >&2
+        return 1
+    fi
+    local message="$1"
+    shift
+    "$PYTHON" -m cortex_slack_bridge.notify --session "$SESSION_ID" "$@" "$message"
+}
+
+cmd_confirm() {
+    if [[ $# -lt 1 ]]; then
+        echo "Usage: coco-bridge confirm \"question\" [--id ID] [--timeout SECS]" >&2
+        return 1
+    fi
+    local question="$1"
+    shift
+    "$PYTHON" -m cortex_slack_bridge.notify --confirm --session "$SESSION_ID" "$question" "$@"
+}
+
+cmd_logs() {
+    if [[ -f "$LOG_FILE" ]]; then
+        tail -f "$LOG_FILE"
+    else
+        echo "No log file yet. Start the bridge first."
+    fi
+}
+
+cmd_inbox() {
+    if [[ -f "$INBOX_FILE" ]]; then
+        cat "$INBOX_FILE"
+    else
+        echo "[]"
+    fi
+}
+
+# --- Main dispatch ---------------------------------------------------------
+case "${1:-help}" in
+    start)   cmd_start ;;
+    stop)    cmd_stop ;;
+    status)  cmd_status ;;
+    send)    shift; cmd_send "$@" ;;
+    confirm) shift; cmd_confirm "$@" ;;
+    logs)    cmd_logs ;;
+    inbox)   cmd_inbox ;;
+    help|*)
+        echo "coco-bridge — Cortex Code Slack Bridge"
+        echo ""
+        echo "Commands:"
+        echo "  start              Start the bridge bot in the background"
+        echo "  stop               Stop the bridge bot"
+        echo "  status             Check if the bridge is running"
+        echo "  send \"message\"     Send a plain notification"
+        echo "  confirm \"question\" Send Approve/Deny buttons and wait for response"
+        echo "  logs               Tail the bridge log"
+        echo "  inbox              Show current inbox contents"
+        ;;
+esac
