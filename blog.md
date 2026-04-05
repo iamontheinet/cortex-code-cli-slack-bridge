@@ -147,11 +147,31 @@ It auto-detects the project's virtualenv, manages the PID file, and dispatches t
 
 ## How It Integrates with Cortex Code
 
-The bridge plugs into Cortex Code through two mechanisms:
+This project exists because of Cortex Code's hook system, and it's worth pausing to appreciate how much that unlocks.
+
+### The Hook System
+
+Cortex Code has a lifecycle hook system defined in `~/.snowflake/cortex/hooks.json`. You can register shell commands that fire at specific points:
+
+- **SessionStart** -- runs when a new session begins (before the agent does anything)
+- **PostToolUse** -- fires after every tool call (bash, file write, SQL execution, etc.)
+- **UserPromptSubmit** -- fires when the user sends a message
+- **Stop** -- fires when the session ends
+- **SubagentStop** -- fires when a background agent completes
+
+Each hook is a shell command with a configurable timeout. The stdout from SessionStart hooks gets passed to the agent as context, which is how the bridge tells Cortex Code "hey, I'm running, ask the user if they want Slack enabled."
+
+This is a big deal. It means you can build sidecar applications that plug into Cortex Code's lifecycle without modifying Cortex Code itself. The Slack bridge uses SessionStart to auto-launch. But you could just as easily build:
+
+- A PostToolUse hook that logs every tool call to a database (audit trail)
+- A UserPromptSubmit hook that captures conversation history (flight recorder)
+- A Stop hook that sends a session summary to Slack or email
+
+The hook system turns Cortex Code from a closed tool into an extensible platform. This bridge is just one example of what's possible.
 
 ### 1. SessionStart Hook
 
-A hook in `~/.snowflake/cortex/hooks.json` runs on every new session. It checks if the bridge bot is running and starts it if not:
+The bridge uses a SessionStart hook in `~/.snowflake/cortex/hooks.json` that runs on every new session. It checks if the bridge bot is running and starts it if not:
 
 ```bash
 #!/usr/bin/env bash
