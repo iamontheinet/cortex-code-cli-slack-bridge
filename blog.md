@@ -18,7 +18,11 @@ Three interaction patterns:
 
 3. **Free-text replies** -- You type a message in the Slack DM. It lands in a session-specific inbox file. Cortex Code's cron job picks it up and treats it as user input.
 
-The "bypass safeguards" angle is worth calling out explicitly: Cortex Code has a built-in tool confirmation system. When the agent wants to run a bash command, execute SQL, or write to a file, it can pause and ask for approval. Normally that requires you sitting at the terminal. This bridge effectively lets you approve those actions remotely -- which is powerful but means you should understand what you're approving. The Slack message includes the full context (the SQL statement, the file path, etc.), so you can make an informed decision from your phone.
+The "bypass safeguards" angle is important: **this bridge only works when Cortex Code's "bypass safeguards" setting is enabled.** Here's why.
+
+Cortex Code has a built-in tool confirmation system. When the agent wants to run a bash command, execute SQL, or write to a file, it pauses and asks for your approval in the terminal. With bypass safeguards disabled (the default), the agent handles these confirmations internally. When you enable bypass safeguards, those confirmation prompts become interactive -- and that's what this bridge intercepts and routes to Slack as Approve/Deny buttons.
+
+This means you're giving the agent permission to take potentially destructive actions based on a button tap from your phone. The Slack message includes the full context (the SQL statement, the file path, etc.), so you can make an informed decision. But the responsibility is on you to actually read what you're approving. Don't just tap Approve reflexively -- that "DROP TABLE" button is real.
 
 ## Architecture
 
