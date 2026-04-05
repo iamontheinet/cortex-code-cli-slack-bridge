@@ -24,6 +24,16 @@ Cortex Code has a built-in tool confirmation system. When the agent wants to run
 
 This means you're giving the agent permission to take potentially destructive actions based on a button tap from your phone. The Slack message includes the full context (the SQL statement, the file path, etc.), so you can make an informed decision. But the responsibility is on you to actually read what you're approving. Don't just tap Approve reflexively -- that "DROP TABLE" button is real.
 
+Here's what the Approve/Deny buttons look like in Slack:
+
+<!-- TODO: Add screenshot of Approve/Deny buttons in Slack DM -->
+*[Screenshot: Slack DM showing confirmation prompt with Approve and Deny buttons]*
+
+And the terminal output when the response comes back:
+
+<!-- TODO: Add screenshot of terminal showing "User approved. Executing DROP TABLE..." -->
+*[Screenshot: Terminal showing approval received and action executed]*
+
 ## Architecture
 
 ```
@@ -189,11 +199,22 @@ fi
 
 ### 2. Cortex Code Skill
 
-A skill definition (SKILL.md) teaches Cortex Code how to use the bridge. When you say "slack on", it:
+Cortex Code has a skill system that lets you teach the agent new behaviors via markdown files. A skill is just a `SKILL.md` file in `~/.snowflake/cortex/skills/<name>/` with frontmatter (name, description, trigger phrases, required tools) and a body that explains how the agent should behave.
 
-1. Creates a cron job that polls the inbox every minute
-2. Sends an activation message to Slack
-3. Starts routing questions and confirmations through Slack instead of the terminal
+The Slack bridge skill (`~/.snowflake/cortex/skills/slack-bridge/SKILL.md`) defines:
+
+- **Trigger phrases** -- "slack on", "enable slack", "/slack", etc.
+- **Activation flow** -- what to do when the user opts in
+- **Message routing** -- how to handle inbox entries, when to use notifications vs. confirmations
+- **Deactivation** -- how "slack off" tears down the polling
+
+When you say "slack on", the skill instructs the agent to:
+
+1. Create a session-scoped cron job that polls the inbox every minute
+2. Send an activation message to Slack
+3. Start routing questions and confirmations through Slack instead of the terminal
+
+The cron pattern here is worth calling out. Cortex Code's `cron_create` tool lets you schedule prompts that fire on a schedule -- and they're session-scoped, meaning they die when the session ends. The bridge uses this as a heartbeat: every minute, a "Slack inbox check" prompt fires. The skill tells the agent to read the inbox file, process any messages silently if empty, and handle them if not. It's a clever way to give an agent a polling loop without any background threads or watchers -- just a cron job and a JSON file.
 
 The skill also handles "slack off" to disable the bridge mid-session, and defines when to use notifications vs. confirmations vs. free-text questions.
 
@@ -317,5 +338,7 @@ A few rough edges and ideas for v2:
 ## Wrapping Up
 
 The whole project is ~300 lines of Python plus a shell wrapper. It turns Cortex Code from a "sit at your desk" tool into something you can supervise from your phone. The Approve/Deny pattern is especially useful -- you can kick off a big migration, walk away, and approve each destructive step from Slack as the agent reaches it.
+
+One last thing: this blog post was itself written and iterated on via the Slack bridge. I kicked off the work in Cortex Code, walked away from my laptop, and reviewed the draft from my phone. When I wanted changes -- "add a section on the hook system", "clarify the bypass safeguards requirement" -- I typed them into the Slack DM. Cortex Code picked them up, made the edits, committed, pushed, and sent me a confirmation. The whole review loop happened without me touching the terminal. If that's not a good dogfood moment, I don't know what is.
 
 The code is at [github.com/iamontheinet/cortex-code-cli-slack-bridge](https://github.com/iamontheinet/cortex-code-cli-slack-bridge). Clone it, plug in your Slack tokens, and try the demo.
