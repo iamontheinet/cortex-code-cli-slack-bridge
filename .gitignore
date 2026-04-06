@@ -10,3 +10,4 @@ inbox*.json
 .DS_Store
 dist/
 build/
+blog.md
