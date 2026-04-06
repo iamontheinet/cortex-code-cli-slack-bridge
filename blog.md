@@ -329,12 +329,84 @@ Here's a real example from this session. I was working on this blog post and rep
 
 The whole review loop -- reading, giving feedback, requesting changes -- happened from Slack while Cortex Code handled the edits, commits, and pushes autonomously.
 
-## Ideas for v2
+## v2: Audit Log and Faster Polling
 
-- **Polling latency** -- The cron job checks the inbox every minute. Your message might sit for up to 60 seconds before the agent sees it. A file watcher or WebSocket would be more responsive, but the simplicity of cron won out for v1.
-- **No encryption** -- Inbox files are plain JSON on disk. The tokens in config.json are also plain text. For a personal tool on your own machine this is fine; for anything shared, you'd want keychain integration or Cortex secret injection.
-- **Single user only** -- The bridge is hardcoded to one Slack user ID. Multi-user support would need a mapping layer.
-- **No message history** -- Inbox entries are consumed and deleted. If you wanted an audit trail, you'd log them somewhere persistent.
+Two improvements based on real usage.
+
+### Message History Audit Log
+
+Inbox entries used to be consumed and deleted. Now every message -- inbound, outbound, and consumed -- gets appended to `~/.cortex-slack-bridge/history.jsonl` as a permanent audit trail.
+
+The config adds one path:
+
+```python
+HISTORY_FILE = BRIDGE_DIR / "history.jsonl"
+```
+
+Both `bridge.py` (inbound messages) and `notify.py` (outbound messages, consumed confirmations) call a shared helper:
+
+```python
+def _log_history(entry: dict, direction: str):
+    """Append a JSONL line to the audit history. Never raises."""
+    try:
+        record = {**entry, "direction": direction, "logged_at": time.time()}
+        with open(HISTORY_FILE, "a") as f:
+            f.write(json.dumps(record) + "\n")
+    except Exception:
+        pass  # history logging must never break core functionality
+```
+
+Three direction values: `inbound` (user DMs and button clicks), `outbound` (agent notifications and confirmation requests), `consumed` (confirmation responses popped from the inbox). Each record includes all the original fields plus a `logged_at` timestamp.
+
+The shell wrapper gets a `history` subcommand:
+
+```bash
+coco-bridge history        # Last 20 entries, pretty-printed
+coco-bridge history 50     # Last 50
+```
+
+It pipes through `python -m json.tool` for readable output, falling back to raw JSONL if the formatter fails.
+
+### Faster Polling
+
+v1's cron fired every minute -- your message could sit for up to 60 seconds. The fix is a double-check pattern in the skill: each cron fire reads the inbox, and if it's empty, sleeps 30 seconds and reads again. Effectively ~30-second worst-case latency without doubling the cron frequency or adding a file watcher.
+
+The skill prompt now tells the agent: "Read inbox. If empty, sleep 30 seconds, then read again. If either check has entries, process them." One cron job, two checks per fire.
+
+### macOS Keychain Token Storage
+
+Tokens used to live in `~/.cortex-slack-bridge/config.json` as plain text. Now they can be stored in macOS Keychain instead -- zero new dependencies, just the `security` CLI that ships with macOS.
+
+The lookup order is: environment variable > Keychain > config.json. The getters in `config.py` call a thin wrapper around `security find-generic-password`:
+
+```python
+KEYCHAIN_SERVICE = "coco-slack-bridge"
+
+def keychain_get(key: str) -> str | None:
+    try:
+        result = subprocess.run(
+            ["security", "find-generic-password", "-s", KEYCHAIN_SERVICE, "-a", key, "-w"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+    return None
+```
+
+Migration is a one-liner:
+
+```bash
+coco-bridge setup-keychain    # reads config.json, stores in Keychain, offers to delete the file
+coco-bridge clear-keychain    # removes all three entries from Keychain
+```
+
+If `config.json` exists, `setup-keychain` reads the tokens from it and stores them. It then offers to back up and delete the file. If there's no config file, it prompts for tokens interactively.
+
+## What I'd Build Next
+
+- **Multi-user support** -- The bridge is hardcoded to one Slack user ID. Supporting multiple users would need a mapping layer.
 
 ## Wrapping Up
 

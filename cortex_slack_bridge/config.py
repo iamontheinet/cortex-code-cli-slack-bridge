@@ -2,6 +2,8 @@
 
 import json
 import os
+import subprocess
+import sys
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
@@ -35,17 +37,65 @@ def _load_file_config() -> dict:
     return {}
 
 
+# ---------------------------------------------------------------------------
+# macOS Keychain helpers (zero external dependencies)
+# ---------------------------------------------------------------------------
+KEYCHAIN_SERVICE = "coco-slack-bridge"
+
+
+def keychain_get(key: str) -> str | None:
+    """Read a value from macOS Keychain. Returns None if not found."""
+    try:
+        result = subprocess.run(
+            ["security", "find-generic-password", "-s", KEYCHAIN_SERVICE, "-a", key, "-w"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass  # not on macOS or keychain unavailable
+    return None
+
+
+def keychain_set(key: str, value: str) -> bool:
+    """Store a value in macOS Keychain. Returns True on success."""
+    try:
+        result = subprocess.run(
+            ["security", "add-generic-password", "-s", KEYCHAIN_SERVICE, "-a", key, "-w", value, "-U"],
+            capture_output=True, text=True, timeout=5,
+        )
+        return result.returncode == 0
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+
+
+def keychain_delete(key: str) -> bool:
+    """Remove a value from macOS Keychain. Returns True on success."""
+    try:
+        result = subprocess.run(
+            ["security", "delete-generic-password", "-s", KEYCHAIN_SERVICE, "-a", key],
+            capture_output=True, text=True, timeout=5,
+        )
+        return result.returncode == 0
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+
+
 def get_app_token() -> str:
     """Return the Slack App-Level token (xapp-...) for Socket Mode."""
     token = os.environ.get("SLACK_BRIDGE_APP_TOKEN")
+    if token:
+        return token
+    token = keychain_get("app_token")
     if token:
         return token
     token = _load_file_config().get("app_token")
     if token:
         return token
     raise RuntimeError(
-        "Missing SLACK_BRIDGE_APP_TOKEN. Set the env var or add "
-        "'app_token' to ~/.cortex-slack-bridge/config.json"
+        "Missing SLACK_BRIDGE_APP_TOKEN. Set the env var, run "
+        "'coco-bridge setup-keychain', or add 'app_token' to "
+        "~/.cortex-slack-bridge/config.json"
     )
 
 
@@ -54,12 +104,16 @@ def get_bot_token() -> str:
     token = os.environ.get("SLACK_BRIDGE_BOT_TOKEN")
     if token:
         return token
+    token = keychain_get("bot_token")
+    if token:
+        return token
     token = _load_file_config().get("bot_token")
     if token:
         return token
     raise RuntimeError(
-        "Missing SLACK_BRIDGE_BOT_TOKEN. Set the env var or add "
-        "'bot_token' to ~/.cortex-slack-bridge/config.json"
+        "Missing SLACK_BRIDGE_BOT_TOKEN. Set the env var, run "
+        "'coco-bridge setup-keychain', or add 'bot_token' to "
+        "~/.cortex-slack-bridge/config.json"
     )
 
 
@@ -68,12 +122,16 @@ def get_user_id() -> str:
     uid = os.environ.get("SLACK_BRIDGE_USER_ID")
     if uid:
         return uid
+    uid = keychain_get("user_id")
+    if uid:
+        return uid
     uid = _load_file_config().get("user_id")
     if uid:
         return uid
     raise RuntimeError(
-        "Missing SLACK_BRIDGE_USER_ID. Set the env var or add "
-        "'user_id' to ~/.cortex-slack-bridge/config.json"
+        "Missing SLACK_BRIDGE_USER_ID. Set the env var, run "
+        "'coco-bridge setup-keychain', or add 'user_id' to "
+        "~/.cortex-slack-bridge/config.json"
     )
 
 

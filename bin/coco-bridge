@@ -147,6 +147,64 @@ cmd_history() {
     tail -n "$n" "$HISTORY_FILE" | "$PYTHON" -m json.tool --no-ensure-ascii 2>/dev/null || tail -n "$n" "$HISTORY_FILE"
 }
 
+cmd_setup_keychain() {
+    local config_file="$BRIDGE_DIR/config.json"
+    local app_token="" bot_token="" user_id=""
+
+    if [[ -f "$config_file" ]]; then
+        echo "Found config.json -- migrating tokens to macOS Keychain..."
+        app_token=$("$PYTHON" -c "import json; print(json.load(open('$config_file')).get('app_token',''))")
+        bot_token=$("$PYTHON" -c "import json; print(json.load(open('$config_file')).get('bot_token',''))")
+        user_id=$("$PYTHON" -c "import json; print(json.load(open('$config_file')).get('user_id',''))")
+    else
+        echo "No config.json found. Enter tokens manually."
+        read -rp "App token (xapp-...): " app_token
+        read -rp "Bot token (xoxb-...): " bot_token
+        read -rp "User ID (U...): " user_id
+    fi
+
+    local ok=true
+    for pair in "app_token:$app_token" "bot_token:$bot_token" "user_id:$user_id"; do
+        local key="${pair%%:*}"
+        local val="${pair#*:}"
+        if [[ -z "$val" ]]; then
+            echo "  Skipping $key (empty)"
+            continue
+        fi
+        if security add-generic-password -s coco-slack-bridge -a "$key" -w "$val" -U 2>/dev/null; then
+            echo "  Stored $key in Keychain"
+        else
+            echo "  Failed to store $key" >&2
+            ok=false
+        fi
+    done
+
+    if [[ "$ok" == true && -f "$config_file" ]]; then
+        echo ""
+        read -rp "Delete config.json (tokens are now in Keychain)? [y/N] " confirm
+        if [[ "$confirm" =~ ^[Yy] ]]; then
+            mv "$config_file" "${config_file}.bak"
+            echo "  Moved to config.json.bak"
+        else
+            echo "  Kept config.json (Keychain takes priority over it)"
+        fi
+    fi
+
+    echo "Done. Tokens will be read from: env var > Keychain > config.json"
+}
+
+cmd_clear_keychain() {
+    echo "Removing Slack bridge tokens from macOS Keychain..."
+    for key in app_token bot_token user_id; do
+        if security delete-generic-password -s coco-slack-bridge -a "$key" 2>/dev/null; then
+            echo "  Removed $key"
+        else
+            echo "  $key not found in Keychain"
+        fi
+    done
+    echo "Done."
+}
+
 # --- Main dispatch ---------------------------------------------------------
 case "${1:-help}" in
     start)   cmd_start ;;
@@ -157,6 +215,8 @@ case "${1:-help}" in
     logs)    cmd_logs ;;
     inbox)   cmd_inbox ;;
     history) shift; cmd_history "$@" ;;
+    setup-keychain) cmd_setup_keychain ;;
+    clear-keychain) cmd_clear_keychain ;;
     help|*)
         echo "coco-bridge — Cortex Code Slack Bridge"
         echo ""
@@ -169,5 +229,7 @@ case "${1:-help}" in
         echo "  logs               Tail the bridge log"
         echo "  inbox              Show current inbox contents"
         echo "  history [N]        Show last N history entries (default: 20)"
+        echo "  setup-keychain     Store tokens in macOS Keychain (migrate from config.json)"
+        echo "  clear-keychain     Remove tokens from macOS Keychain"
         ;;
 esac
