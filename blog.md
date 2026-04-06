@@ -59,7 +59,25 @@ INBOX_FILE = BRIDGE_DIR / "inbox.json"
 PID_FILE = BRIDGE_DIR / "bridge.pid"
 ```
 
-Tokens come from environment variables first (`SLACK_BRIDGE_APP_TOKEN`, `SLACK_BRIDGE_BOT_TOKEN`), falling back to a JSON config file at `~/.cortex-slack-bridge/config.json`. The config file approach is easier for local dev; env vars are better for anything automated.
+Token lookup follows a priority chain: environment variable > macOS Keychain > config file. Env vars (`SLACK_BRIDGE_APP_TOKEN`, `SLACK_BRIDGE_BOT_TOKEN`) are checked first, then Keychain via the `security` CLI, then `~/.cortex-slack-bridge/config.json` as a fallback. The Keychain path means tokens never sit in plain text on disk:
+
+```python
+KEYCHAIN_SERVICE = "coco-slack-bridge"
+
+def keychain_get(key: str) -> str | None:
+    try:
+        result = subprocess.run(
+            ["security", "find-generic-password", "-s", KEYCHAIN_SERVICE, "-a", key, "-w"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+    return None
+```
+
+Zero new dependencies -- just the `security` CLI that ships with macOS.
 
 Session management is minimal: `get_session_inbox()` returns the inbox path for a session ID, and `set_active_session()` / `get_active_session()` track which session the bridge should route messages to when there's no metadata to go on.
 
@@ -102,6 +120,21 @@ def handle_approve(ack, body, client):
 
 After a button click, the original message gets updated to show the result (replacing the buttons with "Approved ✓" or "Denied ✗"). This prevents double-clicks and gives you visual confirmation.
 
+Both `bridge.py` and `notify.py` append every message to `~/.cortex-slack-bridge/history.jsonl` -- a permanent audit trail. Inbound DMs, outbound notifications, consumed confirmations -- everything gets logged with direction and timestamp:
+
+```python
+def _log_history(entry: dict, direction: str):
+    """Append a JSONL line to the audit history. Never raises."""
+    try:
+        record = {**entry, "direction": direction, "logged_at": time.time()}
+        with open(HISTORY_FILE, "a") as f:
+            f.write(json.dumps(record) + "\n")
+    except Exception:
+        pass  # history logging must never break core functionality
+```
+
+Three direction values: `inbound` (user DMs and button clicks), `outbound` (agent notifications and confirmation requests), `consumed` (confirmation responses popped from the inbox).
+
 ### `notify.py` -- Sending Messages and Confirmations
 
 This is the outbound side. Two main functions:
@@ -143,6 +176,10 @@ coco-bridge send "message"     # Send a DM
 coco-bridge send "msg" --type success  # Color-coded
 coco-bridge confirm "question" # Approve/Deny buttons
 coco-bridge inbox              # Read inbox contents
+coco-bridge history            # Last 20 messages (audit log)
+coco-bridge history 50         # Last N messages
+coco-bridge setup-keychain     # Store tokens in macOS Keychain
+coco-bridge clear-keychain     # Remove tokens from Keychain
 coco-bridge logs               # Tail the log file
 ```
 
@@ -203,7 +240,7 @@ When you say "slack on", the skill instructs the agent to:
 2. Send an activation message to Slack
 3. Start routing questions and status updates through Slack instead of the terminal
 
-The cron pattern here is worth calling out. Cortex Code's `cron_create` tool lets you schedule prompts that fire on a schedule -- and they're session-scoped, meaning they die when the session ends. The bridge uses this as a heartbeat: every minute, a "Slack inbox check" prompt fires. The skill tells the agent to read the inbox file, process any messages silently if empty, and handle them if not. It's a clever way to give an agent a polling loop without any background threads or watchers -- just a cron job and a JSON file.
+The cron pattern here is worth calling out. Cortex Code's `cron_create` tool lets you schedule prompts that fire on a schedule -- and they're session-scoped, meaning they die when the session ends. The bridge uses this as a heartbeat: every minute, a "Slack inbox check" prompt fires. The skill tells the agent to read the inbox file, and if it's empty, sleep 30 seconds and check again. Two checks per cron fire gives you ~30-second worst-case latency without doubling the cron frequency or adding a file watcher. It's a cheap way to give an agent a polling loop -- just a cron job and a JSON file.
 
 The skill also handles "slack off" to disable the bridge mid-session.
 
@@ -241,19 +278,28 @@ python3 -m venv .venv
 
 ### Configure Tokens
 
+The recommended approach stores tokens in macOS Keychain:
+
 ```bash
-mkdir -p ~/.cortex-slack-bridge
-cp config.json.example ~/.cortex-slack-bridge/config.json
+coco-bridge setup-keychain
+# Prompts for app token, bot token, and user ID
+# Stores them in Keychain under the "coco-slack-bridge" service
 ```
 
-Edit `~/.cortex-slack-bridge/config.json` with your actual tokens:
+If you already have a `config.json`, `setup-keychain` reads from it, migrates to Keychain, and offers to delete the file.
 
-```json
-{
-  "app_token": "xapp-1-A0...",
-  "bot_token": "xoxb-...",
-  "user_id": "U02M..."
-}
+Alternatively, use a config file or env vars:
+
+```bash
+# Config file approach
+mkdir -p ~/.cortex-slack-bridge
+cp config.json.example ~/.cortex-slack-bridge/config.json
+# Edit with your actual tokens
+
+# Or env vars
+export SLACK_BRIDGE_APP_TOKEN="xapp-1-A0..."
+export SLACK_BRIDGE_BOT_TOKEN="xoxb-..."
+export SLACK_BRIDGE_USER_ID="U02M..."
 ```
 
 ### Start and Test
@@ -328,81 +374,6 @@ Here's a real example from this session. I was working on this blog post and rep
 - Agent sends a 10-point section-by-section summary
 
 The whole review loop -- reading, giving feedback, requesting changes -- happened from Slack while Cortex Code handled the edits, commits, and pushes autonomously.
-
-## v2: Audit Log and Faster Polling
-
-Two improvements based on real usage.
-
-### Message History Audit Log
-
-Inbox entries used to be consumed and deleted. Now every message -- inbound, outbound, and consumed -- gets appended to `~/.cortex-slack-bridge/history.jsonl` as a permanent audit trail.
-
-The config adds one path:
-
-```python
-HISTORY_FILE = BRIDGE_DIR / "history.jsonl"
-```
-
-Both `bridge.py` (inbound messages) and `notify.py` (outbound messages, consumed confirmations) call a shared helper:
-
-```python
-def _log_history(entry: dict, direction: str):
-    """Append a JSONL line to the audit history. Never raises."""
-    try:
-        record = {**entry, "direction": direction, "logged_at": time.time()}
-        with open(HISTORY_FILE, "a") as f:
-            f.write(json.dumps(record) + "\n")
-    except Exception:
-        pass  # history logging must never break core functionality
-```
-
-Three direction values: `inbound` (user DMs and button clicks), `outbound` (agent notifications and confirmation requests), `consumed` (confirmation responses popped from the inbox). Each record includes all the original fields plus a `logged_at` timestamp.
-
-The shell wrapper gets a `history` subcommand:
-
-```bash
-coco-bridge history        # Last 20 entries, pretty-printed
-coco-bridge history 50     # Last 50
-```
-
-It pipes through `python -m json.tool` for readable output, falling back to raw JSONL if the formatter fails.
-
-### Faster Polling
-
-v1's cron fired every minute -- your message could sit for up to 60 seconds. The fix is a double-check pattern in the skill: each cron fire reads the inbox, and if it's empty, sleeps 30 seconds and reads again. Effectively ~30-second worst-case latency without doubling the cron frequency or adding a file watcher.
-
-The skill prompt now tells the agent: "Read inbox. If empty, sleep 30 seconds, then read again. If either check has entries, process them." One cron job, two checks per fire.
-
-### macOS Keychain Token Storage
-
-Tokens used to live in `~/.cortex-slack-bridge/config.json` as plain text. Now they can be stored in macOS Keychain instead -- zero new dependencies, just the `security` CLI that ships with macOS.
-
-The lookup order is: environment variable > Keychain > config.json. The getters in `config.py` call a thin wrapper around `security find-generic-password`:
-
-```python
-KEYCHAIN_SERVICE = "coco-slack-bridge"
-
-def keychain_get(key: str) -> str | None:
-    try:
-        result = subprocess.run(
-            ["security", "find-generic-password", "-s", KEYCHAIN_SERVICE, "-a", key, "-w"],
-            capture_output=True, text=True, timeout=5,
-        )
-        if result.returncode == 0:
-            return result.stdout.strip()
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        pass
-    return None
-```
-
-Migration is a one-liner:
-
-```bash
-coco-bridge setup-keychain    # reads config.json, stores in Keychain, offers to delete the file
-coco-bridge clear-keychain    # removes all three entries from Keychain
-```
-
-If `config.json` exists, `setup-keychain` reads the tokens from it and stores them. It then offers to back up and delete the file. If there's no config file, it prompts for tokens interactively.
 
 ## What I'd Build Next
 
