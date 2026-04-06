@@ -1,8 +1,6 @@
 # Cortex Code CLI Slack Bridge
 
-Bidirectional Slack DM bridge for [Cortex Code](https://docs.snowflake.com/en/user-guide/snowflake-cortex/cortex-code) -- get notifications, approve/deny destructive actions, and steer your AI coding agent from your phone.
-
-Read the full writeup: [Building a Bidirectional Slack Bridge for Cortex Code CLI](blog.md)
+Bidirectional Slack DM bridge for [Cortex Code](https://docs.snowflake.com/en/user-guide/cortex-code/cortex-code-cli) -- get notifications, approve/deny destructive actions, and steer your AI coding agent from your phone.
 
 ## Quick Start
 
@@ -40,3 +38,7 @@ You need a Slack app with Socket Mode enabled:
 4. Subscribe to bot events: `message.im`
 5. Install the app to your workspace and copy the Bot Token (`xoxb-...`)
 6. Find your Slack User ID (click your profile > three dots > Copy member ID)
+
+## Blog
+
+Read the blog for more details.
