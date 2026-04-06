@@ -40,7 +40,3 @@ You need a Slack app with Socket Mode enabled:
 4. Subscribe to bot events: `message.im`
 5. Install the app to your workspace and copy the Bot Token (`xoxb-...`)
 6. Find your Slack User ID (click your profile > three dots > Copy member ID)
-
-## License
-
-MIT
