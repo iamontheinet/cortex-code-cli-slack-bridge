@@ -18,6 +18,7 @@ from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
 
 from cortex_slack_bridge.config import (
+    HISTORY_FILE,
     LOG_FILE,
     PID_FILE,
     ensure_dirs,
@@ -57,6 +58,16 @@ def _read_inbox(session_id: str | None = None) -> list[dict]:
         return []
 
 
+def _log_history(entry: dict, direction: str):
+    """Append a JSONL line to the audit history. Never raises."""
+    try:
+        record = {**entry, "direction": direction, "logged_at": time.time()}
+        with open(HISTORY_FILE, "a") as f:
+            f.write(json.dumps(record) + "\n")
+    except Exception:
+        pass  # history logging must never break core functionality
+
+
 def _append_inbox(entry: dict, session_id: str | None = None):
     """Append a message to the session's inbox (atomic-ish via temp file)."""
     ensure_dirs()
@@ -69,6 +80,7 @@ def _append_inbox(entry: dict, session_id: str | None = None):
         json.dump(entries, f, indent=2)
     tmp.replace(inbox)
     log.info("Wrote inbox entry: %s -> session %s", entry.get("type", "unknown"), sid)
+    _log_history(entry, "inbound")
 
 
 # ---------------------------------------------------------------------------

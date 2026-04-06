@@ -10,10 +10,12 @@
 #   coco-bridge confirm "question" Send confirmation buttons (blocks until response)
 #   coco-bridge logs               Tail the bridge log
 #   coco-bridge inbox              Show current inbox contents
+#   coco-bridge history [N]        Show last N history entries (default: 20)
 
 set -euo pipefail
 
 BRIDGE_DIR="$HOME/.cortex-slack-bridge"
+HISTORY_FILE="$BRIDGE_DIR/history.jsonl"
 PID_FILE="$BRIDGE_DIR/bridge.pid"
 LOG_FILE="$BRIDGE_DIR/bridge.log"
 SESSION_ID="${CORTEX_SESSION_ID:-default}"
@@ -136,6 +138,15 @@ cmd_inbox() {
     fi
 }
 
+cmd_history() {
+    local n="${1:-20}"
+    if [[ ! -f "$HISTORY_FILE" ]]; then
+        echo "No history yet."
+        return 0
+    fi
+    tail -n "$n" "$HISTORY_FILE" | "$PYTHON" -m json.tool --no-ensure-ascii 2>/dev/null || tail -n "$n" "$HISTORY_FILE"
+}
+
 # --- Main dispatch ---------------------------------------------------------
 case "${1:-help}" in
     start)   cmd_start ;;
@@ -145,6 +156,7 @@ case "${1:-help}" in
     confirm) shift; cmd_confirm "$@" ;;
     logs)    cmd_logs ;;
     inbox)   cmd_inbox ;;
+    history) shift; cmd_history "$@" ;;
     help|*)
         echo "coco-bridge — Cortex Code Slack Bridge"
         echo ""
@@ -156,5 +168,6 @@ case "${1:-help}" in
         echo "  confirm \"question\" Send Approve/Deny buttons and wait for response"
         echo "  logs               Tail the bridge log"
         echo "  inbox              Show current inbox contents"
+        echo "  history [N]        Show last N history entries (default: 20)"
         ;;
 esac

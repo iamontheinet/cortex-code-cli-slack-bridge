@@ -12,6 +12,7 @@ INBOX_FILE = BRIDGE_DIR / "inbox.json"  # legacy single-session fallback
 PID_FILE = BRIDGE_DIR / "bridge.pid"
 LOG_FILE = BRIDGE_DIR / "bridge.log"
 ACTIVE_SESSION_FILE = BRIDGE_DIR / "active_session"
+HISTORY_FILE = BRIDGE_DIR / "history.jsonl"
 
 # ---------------------------------------------------------------------------
 # Slack tokens

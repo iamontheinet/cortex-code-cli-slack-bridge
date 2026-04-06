@@ -22,6 +22,7 @@ from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 
 from cortex_slack_bridge.config import (
+    HISTORY_FILE,
     ensure_dirs,
     get_bot_token,
     get_session_id,
@@ -55,6 +56,16 @@ def _write_inbox(entries: list[dict], session_id: str | None = None):
     tmp.replace(inbox)
 
 
+def _log_history(entry: dict, direction: str):
+    """Append a JSONL line to the audit history. Never raises."""
+    try:
+        record = {**entry, "direction": direction, "logged_at": time.time()}
+        with open(HISTORY_FILE, "a") as f:
+            f.write(json.dumps(record) + "\n")
+    except Exception:
+        pass
+
+
 def _pop_confirmation(confirmation_id: str, session_id: str | None = None) -> dict | None:
     """Check inbox for a confirmation response and remove it if found."""
     entries = _read_inbox(session_id)
@@ -65,6 +76,7 @@ def _pop_confirmation(confirmation_id: str, session_id: str | None = None) -> di
         ):
             entries.pop(i)
             _write_inbox(entries, session_id)
+            _log_history(entry, "consumed")
             return entry
     return None
 
@@ -152,6 +164,7 @@ def send_message(
                 metadata=metadata,
             )
             set_active_session(sid)
+            _log_history({"type": "notification", "text": text, "msg_type": msg_type, "session_id": sid}, "outbound")
             return resp.data
         except SlackApiError as e:
             print(f"Slack API error: {e.response['error']}", file=sys.stderr)
@@ -171,6 +184,7 @@ def send_message(
             channel=channel, text=text, blocks=blocks, metadata=metadata
         )
         set_active_session(sid)
+        _log_history({"type": "notification", "text": text, "session_id": sid}, "outbound")
         return resp.data
     except SlackApiError as e:
         print(f"Slack API error: {e.response['error']}", file=sys.stderr)
@@ -229,6 +243,7 @@ def send_confirmation(
     ]
 
     send_message(question, blocks=blocks, session_id=sid)
+    _log_history({"type": "confirmation_request", "text": question, "confirmation_id": confirmation_id, "session_id": sid}, "outbound")
 
     # Poll session-specific inbox for the button response
     deadline = time.time() + timeout
