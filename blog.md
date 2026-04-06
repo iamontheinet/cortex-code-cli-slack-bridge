@@ -1,10 +1,14 @@
 # Building a Bidirectional Slack Bridge for Cortex Code CLI
 
-Cortex Code is Snowflake's AI coding agent that runs in your terminal. It reads files, writes code, executes SQL, manages git repos -- the works. By default, it handles tool execution on its own. But if you enable "bypass safeguards", the agent pauses before potentially destructive actions and asks for your approval in the terminal. That's great for safety -- but it means you need to be sitting at the terminal to keep things moving.
+Cortex Code is Snowflake's AI coding agent that runs in your terminal. It reads files, writes code, executes SQL, manages git repos -- the works. But sometimes you kick off a long-running task and walk away. Maybe you're grabbing coffee, maybe you're in a meeting. The agent finishes a step, has a question, and... sits there waiting for you to come back and type something.
 
-What if you kicked off a long pipeline with bypass safeguards enabled and then walked away?
+That's why I built this Slack bridge. It gives Cortex Code a way to reach you when you're not at the terminal:
 
-That's why I built this Slack bridge. With bypass safeguards enabled, it routes those confirmation prompts to your phone as Approve/Deny buttons. You tap a button from the couch, Cortex Code picks up the response, and keeps going. You can also send it free-text instructions from Slack -- "skip that step and move to the next one" -- without touching the terminal.
+- Send you status updates as Slack DMs
+- Ask you questions and get free-text replies from your phone
+- Present Approve/Deny buttons for decisions the agent wants your input on
+
+You can steer the agent from the couch. "Skip that step and move to the next one." "Use approach #2." "Don't deploy yet." All from Slack.
 
 The whole thing runs as a ~300-line Python sidecar. No servers, no databases, no cloud infra. Just a Slack bot, some JSON files, and a shell wrapper.
 
@@ -14,15 +18,17 @@ Three interaction patterns:
 
 1. **Notifications** -- Cortex Code sends you status updates as Slack DMs. "Feature engineering done. Model training starting." You see them on your phone.
 
-2. **Approve/Deny** -- When Cortex Code needs permission for something dangerous, it sends a message with two buttons. You tap Approve or Deny. The CLI session picks up your response and acts accordingly.
+2. **Approve/Deny** -- The agent can send you a question with Approve and Deny buttons. For example, before running a destructive SQL statement, the skill instructs the agent to ask you via Slack instead of just proceeding. You tap a button, the agent picks up the response and acts accordingly.
 
 3. **Free-text replies** -- You type a message in the Slack DM. It lands in a session-specific inbox file. Cortex Code's cron job picks it up and treats it as user input.
 
-The "bypass safeguards" angle is important: **this bridge only works when Cortex Code's "bypass safeguards" setting is enabled.** Here's why.
+**An important note on bypass safeguards:** This bridge requires Cortex Code's "bypass safeguards" setting to be enabled. Here's why.
 
-Cortex Code has a built-in tool confirmation system. When the agent wants to run a bash command, execute SQL, or write to a file, it pauses and asks for your approval in the terminal. With bypass safeguards disabled (the default), the agent handles these confirmations internally. When you enable bypass safeguards, those confirmation prompts become interactive -- and that's what this bridge intercepts and routes to Slack as Approve/Deny buttons.
+By default, Cortex Code has a built-in tool confirmation system -- when the agent wants to run a bash command, execute SQL, or write to a file, it shows an Allow/Deny prompt in the terminal UI. That's a CLI-level feature that the bridge cannot intercept. Those prompts are handled entirely within the terminal.
 
-This means you're giving the agent permission to take potentially destructive actions based on a button tap from your phone. The Slack message includes the full context (the SQL statement, the file path, etc.), so you can make an informed decision. But the responsibility is on you to actually read what you're approving. Don't just tap Approve reflexively -- that "DROP TABLE" button is real.
+What the bridge does instead is work at the *agent level*. With bypass safeguards enabled, the built-in tool confirmations are turned off, and the agent runs tools freely. The bridge's skill then instructs the agent to use `coco-bridge confirm` to ask you before taking actions the skill deems dangerous -- like dropping tables, deploying to production, or making irreversible changes. The agent sends Approve/Deny buttons to Slack, waits for your response, and proceeds based on what you tap.
+
+So the confirmation flow is skill-driven, not a system-level interception. The skill teaches the agent *when* to ask and *how* to ask via Slack. This means you're trusting the skill's judgment about what's dangerous, plus the agent's ability to follow those instructions. It works well in practice, but it's not the same as the built-in tool confirmation system -- it's a complementary layer on top.
 
 Here's what the Approve/Deny buttons look like in Slack:
 
