@@ -18,17 +18,15 @@ Three interaction patterns:
 
 1. **Notifications** -- Cortex Code sends you status updates as Slack DMs. "Feature engineering done. Model training starting." You see them on your phone.
 
-2. **Approve/Deny** -- The agent can send you a question with Approve and Deny buttons. For example, before running a destructive SQL statement, the skill instructs the agent to ask you via Slack instead of just proceeding. You tap a button, the agent picks up the response and acts accordingly.
+2. **Approve/Deny buttons** -- The bridge includes a `coco-bridge confirm` command that sends a question with Approve and Deny buttons to Slack and blocks until you tap one. This is useful in scripts and automation -- the included demo uses it to simulate destructive action gates. In theory, the skill can instruct the agent to use it before dangerous operations, but in practice the agent doesn't reliably self-gate this way. It's more of a building block for structured workflows than an automatic safety net.
 
-3. **Free-text replies** -- You type a message in the Slack DM. It lands in a session-specific inbox file. Cortex Code's cron job picks it up and treats it as user input.
+3. **Free-text replies** -- You type a message in the Slack DM. It lands in a session-specific inbox file. Cortex Code's cron job picks it up and treats it as user input. This is the pattern that gets the most real-world use -- steering the agent remotely with instructions like "skip that step" or "use approach #2."
 
 **An important note on bypass safeguards:** This bridge requires Cortex Code's "bypass safeguards" setting to be enabled. Here's why.
 
 By default, Cortex Code has a built-in tool confirmation system -- when the agent wants to run a bash command, execute SQL, or write to a file, it shows an Allow/Deny prompt in the terminal UI. That's a CLI-level feature that the bridge cannot intercept. Those prompts are handled entirely within the terminal.
 
-What the bridge does instead is work at the *agent level*. With bypass safeguards enabled, the built-in tool confirmations are turned off, and the agent runs tools freely. The bridge's skill then instructs the agent to use `coco-bridge confirm` to ask you before taking actions the skill deems dangerous -- like dropping tables, deploying to production, or making irreversible changes. The agent sends Approve/Deny buttons to Slack, waits for your response, and proceeds based on what you tap.
-
-So the confirmation flow is skill-driven, not a system-level interception. The skill teaches the agent *when* to ask and *how* to ask via Slack. This means you're trusting the skill's judgment about what's dangerous, plus the agent's ability to follow those instructions. It works well in practice, but it's not the same as the built-in tool confirmation system -- it's a complementary layer on top.
+With bypass safeguards enabled, the built-in tool confirmations are turned off, and the agent runs tools freely. The bridge then gives you a remote communication channel -- you get notifications about what the agent is doing and can send instructions back. The skill instructs the agent to route questions through Slack (via `coco-bridge send`) instead of using the terminal-based `ask_user_question` tool, so you don't need to be at your desk to keep the conversation going.
 
 Here's what the Approve/Deny buttons look like in Slack:
 
