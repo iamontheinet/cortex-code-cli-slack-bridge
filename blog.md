@@ -1,10 +1,10 @@
 # Building a Bidirectional Slack Bridge for Cortex Code CLI
 
-Cortex Code is Snowflake's AI coding agent that runs in your terminal. It reads files, writes code, executes SQL, manages git repos -- the works. But there's a catch: when it needs your permission to do something destructive (like dropping a table or deploying to production), it blocks and waits for you to type "yes" in the terminal.
+Cortex Code is Snowflake's AI coding agent that runs in your terminal. It reads files, writes code, executes SQL, manages git repos -- the works. By default, it handles tool execution on its own. But if you enable "bypass safeguards", the agent pauses before potentially destructive actions and asks for your approval in the terminal. That's great for safety -- but it means you need to be sitting at the terminal to keep things moving.
 
-What if you're not at your desk? What if you kicked off a long pipeline and walked away?
+What if you kicked off a long pipeline, enabled bypass safeguards for safety, and then walked away?
 
-That's why I built this Slack bridge. It routes those confirmation prompts to your phone as Approve/Deny buttons. You tap a button from the couch, Cortex Code picks up the response, and keeps going. You can also send it free-text instructions from Slack -- "skip that step and move to the next one" -- without touching the terminal.
+That's why I built this Slack bridge. With bypass safeguards enabled, it routes those confirmation prompts to your phone as Approve/Deny buttons. You tap a button from the couch, Cortex Code picks up the response, and keeps going. You can also send it free-text instructions from Slack -- "skip that step and move to the next one" -- without touching the terminal.
 
 The whole thing runs as a ~300-line Python sidecar. No servers, no databases, no cloud infra. Just a Slack bot, some JSON files, and a shell wrapper.
 
