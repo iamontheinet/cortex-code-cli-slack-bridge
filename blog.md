@@ -2,9 +2,7 @@
 
 Cortex Code is Snowflake's AI coding agent that runs in your terminal. It reads files, writes code, executes SQL, manages git repos -- the works. With "bypass safeguards" enabled, it runs autonomously, handling tool execution without pausing for terminal-level confirmations. That's powerful for long-running tasks -- kick off a big refactor, a data pipeline build, or a multi-step analysis and let the agent work.
 
-But here's the thing: the agent sometimes needs your input. It has a question about which approach to take. It finished a milestone and wants to tell you. It hit an ambiguous requirement and doesn't want to guess. Normally, it waits for you to type something in the terminal. If you're not there, it just... waits.
-
-This Slack bridge fixes that. It gives Cortex Code a way to reach you wherever you are -- your phone, your tablet, another meeting. You get DM notifications about what the agent is doing, and you can reply with instructions to steer it. The whole conversation happens in Slack while the agent keeps working in the terminal.
+Cortex Code's hook system and skill framework make it extensible -- you can build sidecar apps that plug into its lifecycle. I wanted to explore that by building a Slack bridge: get DM notifications about what the agent is doing, and reply with instructions to steer it, all from your phone. The whole conversation happens in Slack while the agent keeps working in the terminal.
 
 The whole thing runs as a ~300-line Python sidecar. No servers, no databases, no cloud infra. Just a Slack bot, some JSON files, and a shell wrapper.
 
@@ -18,7 +16,7 @@ Two core interaction patterns, plus a bonus:
 
 3. **Approve/Deny buttons** (bonus) -- The bridge includes a `coco-bridge confirm` command that sends a question with Approve and Deny buttons. The included demo exercises this pattern. It's a building block for structured workflows -- useful in scripts and automation -- but in normal conversations, free-text replies are what you'll actually use.
 
-**A note on bypass safeguards:** This bridge assumes you've enabled "bypass safeguards" in Cortex Code. With bypass safeguards off, the agent pauses for Allow/Deny prompts in the terminal UI -- those are CLI-level prompts the bridge can't reach. With bypass safeguards on, the agent runs tools freely and the bridge becomes your remote communication channel. You get notified about what's happening and can steer the agent via Slack instead of needing to be at the terminal.
+**A note on bypass safeguards:** This bridge works best with "bypass safeguards" enabled in Cortex Code, which lets the agent run tools autonomously. The bridge then becomes your remote communication channel -- you get notified about what's happening and can steer the agent via Slack instead of the terminal.
 
 Here's what the conversation looks like in Slack:
 
@@ -331,9 +329,7 @@ Here's a real example from this session. I was working on this blog post and rep
 
 The whole review loop -- reading, giving feedback, requesting changes -- happened from Slack while Cortex Code handled the edits, commits, and pushes autonomously.
 
-## Things I'd Do Differently
-
-A few rough edges and ideas for v2:
+## Ideas for v2
 
 - **Polling latency** -- The cron job checks the inbox every minute. Your message might sit for up to 60 seconds before the agent sees it. A file watcher or WebSocket would be more responsive, but the simplicity of cron won out for v1.
 - **No encryption** -- Inbox files are plain JSON on disk. The tokens in config.json are also plain text. For a personal tool on your own machine this is fine; for anything shared, you'd want keychain integration or Cortex secret injection.
@@ -342,7 +338,7 @@ A few rough edges and ideas for v2:
 
 ## Wrapping Up
 
-The whole project is ~300 lines of Python plus a shell wrapper. It turns Cortex Code from a "sit at your desk" tool into something you can supervise and steer from your phone. Kick off a task, walk away, get updates, reply with instructions -- all from Slack.
+The whole project is ~300 lines of Python plus a shell wrapper. It extends Cortex Code with a mobile-friendly communication layer -- kick off a task, walk away, get updates, reply with instructions, all from Slack.
 
 One last thing: this blog post was itself written and iterated on via the Slack bridge. I kicked off the work in Cortex Code, walked away from my laptop, and reviewed the draft from my phone. When I wanted changes -- "add a section on the hook system", "clarify the bypass safeguards requirement" -- I typed them into the Slack DM. Cortex Code picked them up, made the edits, committed, pushed, and sent me a confirmation. The whole review loop happened without me touching the terminal. If that's not a good dogfood moment, I don't know what is.
 
