@@ -1,42 +1,29 @@
-# Building a Bidirectional Slack Bridge for Cortex Code CLI
+# Cortex Code CLI Meets Slack
 
-Cortex Code is Snowflake's AI coding agent that runs in your terminal. It reads files, writes code, executes SQL, manages git repos -- the works. But sometimes you kick off a long-running task and walk away. Maybe you're grabbing coffee, maybe you're in a meeting. The agent finishes a step, has a question, and... sits there waiting for you to come back and type something.
+Cortex Code is Snowflake's AI coding agent that runs in your terminal. It reads files, writes code, executes SQL, manages git repos -- the works. With "bypass safeguards" enabled, it runs autonomously, handling tool execution without pausing for terminal-level confirmations. That's powerful for long-running tasks -- kick off a big refactor, a data pipeline build, or a multi-step analysis and let the agent work.
 
-That's why I built this Slack bridge. It gives Cortex Code a way to reach you when you're not at the terminal:
+But here's the thing: the agent sometimes needs your input. It has a question about which approach to take. It finished a milestone and wants to tell you. It hit an ambiguous requirement and doesn't want to guess. Normally, it waits for you to type something in the terminal. If you're not there, it just... waits.
 
-- Send you status updates as Slack DMs
-- Ask you questions and get free-text replies from your phone
-- Present Approve/Deny buttons for decisions the agent wants your input on
-
-You can steer the agent from the couch. "Skip that step and move to the next one." "Use approach #2." "Don't deploy yet." All from Slack.
+This Slack bridge fixes that. It gives Cortex Code a way to reach you wherever you are -- your phone, your tablet, another meeting. You get DM notifications about what the agent is doing, and you can reply with instructions to steer it. The whole conversation happens in Slack while the agent keeps working in the terminal.
 
 The whole thing runs as a ~300-line Python sidecar. No servers, no databases, no cloud infra. Just a Slack bot, some JSON files, and a shell wrapper.
 
 ## What It Actually Does
 
-Three interaction patterns:
+Two core interaction patterns, plus a bonus:
 
-1. **Notifications** -- Cortex Code sends you status updates as Slack DMs. "Feature engineering done. Model training starting." You see them on your phone.
+1. **Notifications** -- The agent sends you status updates as Slack DMs. "Feature engineering done, 5 tables created." "Model training complete, 3 models evaluated." "Blog post committed and pushed." You see them on your phone and know what's happening without being at the terminal.
 
-2. **Approve/Deny buttons** -- The bridge includes a `coco-bridge confirm` command that sends a question with Approve and Deny buttons to Slack and blocks until you tap one. This is useful in scripts and automation -- the included demo uses it to simulate destructive action gates. In theory, the skill can instruct the agent to use it before dangerous operations, but in practice the agent doesn't reliably self-gate this way. It's more of a building block for structured workflows than an automatic safety net.
+2. **Free-text conversations** -- You type a message in the Slack DM. It lands in a session-specific inbox file. The agent's cron job picks it up on the next cycle and treats it as user input. This is the core of the bridge -- you can ask questions ("what's the row count on that table?"), give instructions ("skip that step and move to the next one"), make decisions ("use approach #2"), or redirect the work entirely ("actually, focus on the API layer first"). The agent responds back via Slack.
 
-3. **Free-text replies** -- You type a message in the Slack DM. It lands in a session-specific inbox file. Cortex Code's cron job picks it up and treats it as user input. This is the pattern that gets the most real-world use -- steering the agent remotely with instructions like "skip that step" or "use approach #2."
+3. **Approve/Deny buttons** (bonus) -- The bridge includes a `coco-bridge confirm` command that sends a question with Approve and Deny buttons. The included demo exercises this pattern. It's a building block for structured workflows -- useful in scripts and automation -- but in normal conversations, free-text replies are what you'll actually use.
 
-**An important note on bypass safeguards:** This bridge requires Cortex Code's "bypass safeguards" setting to be enabled. Here's why.
+**A note on bypass safeguards:** This bridge assumes you've enabled "bypass safeguards" in Cortex Code. With bypass safeguards off, the agent pauses for Allow/Deny prompts in the terminal UI -- those are CLI-level prompts the bridge can't reach. With bypass safeguards on, the agent runs tools freely and the bridge becomes your remote communication channel. You get notified about what's happening and can steer the agent via Slack instead of needing to be at the terminal.
 
-By default, Cortex Code has a built-in tool confirmation system -- when the agent wants to run a bash command, execute SQL, or write to a file, it shows an Allow/Deny prompt in the terminal UI. That's a CLI-level feature that the bridge cannot intercept. Those prompts are handled entirely within the terminal.
+Here's what the conversation looks like in Slack:
 
-With bypass safeguards enabled, the built-in tool confirmations are turned off, and the agent runs tools freely. The bridge then gives you a remote communication channel -- you get notifications about what the agent is doing and can send instructions back. The skill instructs the agent to route questions through Slack (via `coco-bridge send`) instead of using the terminal-based `ask_user_question` tool, so you don't need to be at your desk to keep the conversation going.
-
-Here's what the Approve/Deny buttons look like in Slack:
-
-<!-- TODO: Add screenshot of Approve/Deny buttons in Slack DM -->
-*[Screenshot: Slack DM showing confirmation prompt with Approve and Deny buttons]*
-
-And the terminal output when the response comes back:
-
-<!-- TODO: Add screenshot of terminal showing "User approved. Executing DROP TABLE..." -->
-*[Screenshot: Terminal showing approval received and action executed]*
+<!-- TODO: Add screenshot of a Slack DM conversation showing status updates and replies -->
+*[Screenshot: Slack DM thread showing agent status updates and user replies]*
 
 ## Architecture
 
@@ -57,7 +44,7 @@ And the terminal output when the response comes back:
 
 - **Socket Mode** -- No public URLs needed. The bot connects outbound to Slack's WebSocket API. Works behind firewalls, no ngrok required.
 - **File-based inbox** -- Each Cortex Code session gets its own `inbox_{session_id}.json`. The bridge bot writes to it; the CLI polls it via cron. Dead simple, zero dependencies.
-- **Metadata routing** -- Every outbound Slack message includes session metadata. When you tap a button or reply, Slack sends that metadata back. The bridge uses it to write to the correct session's inbox. Multiple sessions, no crosstalk.
+- **Metadata routing** -- Every outbound Slack message includes session metadata. When you reply, Slack sends that metadata back. The bridge uses it to write to the correct session's inbox. Multiple sessions, no crosstalk.
 - **Sidecar process** -- The bridge bot runs as a background process, started automatically by a SessionStart hook. It's not embedded in Cortex Code -- it's a separate Python process that communicates via the filesystem.
 
 ## The Code
@@ -209,18 +196,18 @@ The Slack bridge skill (`~/.snowflake/cortex/skills/slack-bridge/SKILL.md`) defi
 
 - **Trigger phrases** -- "slack on", "enable slack", "/slack", etc.
 - **Activation flow** -- what to do when the user opts in
-- **Message routing** -- how to handle inbox entries, when to use notifications vs. confirmations
+- **Message routing** -- how to handle inbox entries, when to send notifications
 - **Deactivation** -- how "slack off" tears down the polling
 
 When you say "slack on", the skill instructs the agent to:
 
 1. Create a session-scoped cron job that polls the inbox every minute
 2. Send an activation message to Slack
-3. Start routing questions and confirmations through Slack instead of the terminal
+3. Start routing questions and status updates through Slack instead of the terminal
 
 The cron pattern here is worth calling out. Cortex Code's `cron_create` tool lets you schedule prompts that fire on a schedule -- and they're session-scoped, meaning they die when the session ends. The bridge uses this as a heartbeat: every minute, a "Slack inbox check" prompt fires. The skill tells the agent to read the inbox file, process any messages silently if empty, and handle them if not. It's a clever way to give an agent a polling loop without any background threads or watchers -- just a cron job and a JSON file.
 
-The skill also handles "slack off" to disable the bridge mid-session, and defines when to use notifications vs. confirmations vs. free-text questions.
+The skill also handles "slack off" to disable the bridge mid-session.
 
 ## Setting It Up
 
@@ -280,11 +267,11 @@ bin/coco-bridge start
 # Send a test message
 bin/coco-bridge send "Hello from the bridge!"
 
-# Test confirmation buttons
-bin/coco-bridge confirm "Test confirmation -- approve or deny?" --id test-1 --timeout 60
+# Test a reply -- type something back in the Slack DM, then check:
+bin/coco-bridge inbox
 ```
 
-Check your Slack DMs. You should see the messages and buttons.
+Check your Slack DMs. You should see the message, and any reply you type should appear in the inbox.
 
 ### Wire Up the SessionStart Hook
 
@@ -318,11 +305,11 @@ chmod +x ~/.cortex-slack-bridge/start-hook.sh
 
 ## The Demo
 
-The repo includes `demo.sh` which walks through all three interaction patterns:
+The repo includes `demo.sh` which walks through three interaction patterns:
 
-1. **Approve** -- Asks to drop a staging table. You tap Approve in Slack.
-2. **Deny** -- Asks to deploy a model to production. You tap Deny.
-3. **Free-text** -- Sends a status update and asks for instructions. You type a reply.
+1. **Approve** -- Sends a confirmation with Approve/Deny buttons (tests the plumbing)
+2. **Deny** -- Same, but you tap Deny (tests rejection flow)
+3. **Free-text** -- Sends a status update and waits for your reply (tests the core conversation pattern)
 
 ```bash
 bash ~/Apps/cortex-code-cli-slack-bridge/demo.sh
@@ -330,19 +317,33 @@ bash ~/Apps/cortex-code-cli-slack-bridge/demo.sh
 
 It's interactive -- the script pauses between scenarios so you can follow along on your phone.
 
+## What It Looks Like in Practice
+
+Here's a real example from this session. I was working on this blog post and repo setup. The user walked away from the laptop and reviewed everything from Slack:
+
+- Agent sends: "Blog post written (blog.md, ~300 lines). Updating SKILL.md and hooks next."
+- User replies from phone: "Did we include how cool the hook system is?"
+- Agent adds a hook system section, commits, pushes, sends confirmation
+- User replies: "What's next?"
+- Agent offers options, user picks "clean up old directory"
+- User replies: "Awesome! Summarize the blog for me to review"
+- Agent sends a 10-point section-by-section summary
+
+The whole review loop -- reading, giving feedback, requesting changes -- happened from Slack while Cortex Code handled the edits, commits, and pushes autonomously.
+
 ## Things I'd Do Differently
 
 A few rough edges and ideas for v2:
 
-- **Polling is crude** -- The cron job checks the inbox every minute. A WebSocket or file watcher would be more responsive, but the simplicity of cron-based polling won out for v1.
+- **Polling latency** -- The cron job checks the inbox every minute. Your message might sit for up to 60 seconds before the agent sees it. A file watcher or WebSocket would be more responsive, but the simplicity of cron won out for v1.
 - **No encryption** -- Inbox files are plain JSON on disk. The tokens in config.json are also plain text. For a personal tool on your own machine this is fine; for anything shared, you'd want keychain integration or Cortex secret injection.
 - **Single user only** -- The bridge is hardcoded to one Slack user ID. Multi-user support would need a mapping layer.
 - **No message history** -- Inbox entries are consumed and deleted. If you wanted an audit trail, you'd log them somewhere persistent.
 
 ## Wrapping Up
 
-The whole project is ~300 lines of Python plus a shell wrapper. It turns Cortex Code from a "sit at your desk" tool into something you can supervise from your phone. The Approve/Deny pattern is especially useful -- you can kick off a big migration, walk away, and approve each destructive step from Slack as the agent reaches it.
+The whole project is ~300 lines of Python plus a shell wrapper. It turns Cortex Code from a "sit at your desk" tool into something you can supervise and steer from your phone. Kick off a task, walk away, get updates, reply with instructions -- all from Slack.
 
 One last thing: this blog post was itself written and iterated on via the Slack bridge. I kicked off the work in Cortex Code, walked away from my laptop, and reviewed the draft from my phone. When I wanted changes -- "add a section on the hook system", "clarify the bypass safeguards requirement" -- I typed them into the Slack DM. Cortex Code picked them up, made the edits, committed, pushed, and sent me a confirmation. The whole review loop happened without me touching the terminal. If that's not a good dogfood moment, I don't know what is.
 
-The code is at [github.com/iamontheinet/cortex-code-cli-slack-bridge](https://github.com/iamontheinet/cortex-code-cli-slack-bridge). Clone it, plug in your Slack tokens, and try the demo.
+The code is at [github.com/iamontheinet/cortex-code-cli-slack-bridge](https://github.com/iamontheinet/cortex-code-cli-slack-bridge). Clone it, plug in your Slack tokens, and try it out.
