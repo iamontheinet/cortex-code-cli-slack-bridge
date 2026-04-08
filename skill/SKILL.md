@@ -43,6 +43,11 @@ Each session gets its own inbox file (`inbox_{session_id}.json`), so multiple se
 
 **Do NOT set up cron or send Slack messages unless the user has opted in.**
 
+**Polling latency reference:**
+- **Normal mode** (`*/1` cron + double-read): ~30s effective latency (cron fires every 1 min, reads inbox, sleeps 30s, reads again)
+- **Pause mode** (`*/5` cron + single read): ~5 min latency, only checks for resume keywords
+- **Stop/disable**: No polling at all, inbox cleared
+
 ## Pausing Slack
 
 When the user says "pause slack", "pause", "brb", "take a break", or "hold on" (from CLI or Slack), do the following:
