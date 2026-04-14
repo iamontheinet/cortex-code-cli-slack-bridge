@@ -143,6 +143,16 @@ Send Slack notifications when:
 - You have a question and the user hasn't responded in the terminal
 - A significant milestone is reached in multi-step work
 
+## Proactive Updates on Session Resume
+
+When a session resumes from a context summary (i.e., the conversation starts with a summary of a previous session that ran out of context), and the summary indicates pending/in-progress work that the user was waiting on:
+
+1. Complete the carried-over work as described in the summary
+2. **Immediately send a completion update to Slack** via `coco-bridge send` — do NOT wait for the user to ask "what happened?"
+3. The trigger is the Pending Tasks / Current Work sections in the session summary
+
+This prevents the gap where the previous session acked work ("On it...") but ran out of context before delivering results, leaving the user waiting with no update.
+
 ## When to Use Confirmations
 
 Use `confirm` (Approve/Deny buttons) for:
