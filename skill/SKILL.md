@@ -24,6 +24,8 @@ If user picks "Yes", proceed with the enable flow below. If "No", do nothing.
 
 When the user says "enable slack", "start slack", "activate slack", "slack on", "/slack", or answers "Yes" to the SessionStart prompt, do the following:
 
+**MANDATORY: You MUST actually call the `cron_create` tool in step 1 before proceeding to step 2. Do NOT skip cron creation — without it, the bridge sends messages but never polls for replies, making Slack appear broken. Verify the cron was created (you should see a scheduled job ID in the response) before continuing.**
+
 1. Set up inbox polling cron:
 ```
 cron_create with cron "*/1 * * * *" and prompt:
