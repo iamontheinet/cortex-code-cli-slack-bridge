@@ -11,6 +11,10 @@
 #   coco-bridge logs               Tail the bridge log
 #   coco-bridge inbox              Show current inbox contents
 #   coco-bridge history [N]        Show last N history entries (default: 20)
+#   coco-bridge enable-session     Enable Slack for this session (atomic: start + send + register)
+#   coco-bridge disable-session    Disable Slack for this session (atomic: clear + notify)
+#   coco-bridge check-inbox        Double-read inbox with 30s sleep; prints JSON or nothing
+#   coco-bridge clear-inbox        Clear the session inbox file
 
 set -euo pipefail
 
@@ -147,6 +151,59 @@ cmd_history() {
     tail -n "$n" "$HISTORY_FILE" | "$PYTHON" -m json.tool --no-ensure-ascii 2>/dev/null || tail -n "$n" "$HISTORY_FILE"
 }
 
+cmd_enable_session() {
+    # Atomic enable: ensure bridge running + send outbound (sets active_session) + confirm
+    _ensure_dir
+    if ! _is_running; then
+        nohup "$PYTHON" -m cortex_slack_bridge.bridge >> "$LOG_FILE" 2>&1 &
+        sleep 2
+    fi
+    cmd_send "Slack bridge active"
+    echo "Slack bridge enabled for session $SESSION_ID."
+}
+
+cmd_disable_session() {
+    # Atomic disable: clear inbox + send outbound + confirm
+    _ensure_dir
+    echo '[]' > "$INBOX_FILE"
+    cmd_send "Slack bridge off"
+    echo "Slack bridge disabled for session $SESSION_ID."
+}
+
+cmd_check_inbox() {
+    # Double-read inbox with 30s sleep. Prints JSON if entries found, nothing if empty.
+    _ensure_dir
+    local contents
+    if [[ -f "$INBOX_FILE" ]]; then
+        contents=$(<"$INBOX_FILE")
+    else
+        contents="[]"
+    fi
+    # First read: if non-empty, print and exit
+    if [[ "$contents" != "[]" && "$contents" != "" ]]; then
+        echo "$contents"
+        return 0
+    fi
+    # Sleep and try again
+    sleep 30
+    if [[ -f "$INBOX_FILE" ]]; then
+        contents=$(<"$INBOX_FILE")
+    else
+        contents="[]"
+    fi
+    if [[ "$contents" != "[]" && "$contents" != "" ]]; then
+        echo "$contents"
+        return 0
+    fi
+    # Empty after both reads — silent exit
+    return 0
+}
+
+cmd_clear_inbox() {
+    _ensure_dir
+    echo '[]' > "$INBOX_FILE"
+}
+
 cmd_setup_keychain() {
     local config_file="$BRIDGE_DIR/config.json"
     local app_token="" bot_token="" user_id=""
@@ -215,8 +272,12 @@ case "${1:-help}" in
     logs)    cmd_logs ;;
     inbox)   cmd_inbox ;;
     history) shift; cmd_history "$@" ;;
-    setup-keychain) cmd_setup_keychain ;;
-    clear-keychain) cmd_clear_keychain ;;
+    enable-session)  cmd_enable_session ;;
+    disable-session) cmd_disable_session ;;
+    check-inbox)     cmd_check_inbox ;;
+    clear-inbox)     cmd_clear_inbox ;;
+    setup-keychain)  cmd_setup_keychain ;;
+    clear-keychain)  cmd_clear_keychain ;;
     help|*)
         echo "coco-bridge — Cortex Code Slack Bridge"
         echo ""
@@ -229,6 +290,10 @@ case "${1:-help}" in
         echo "  logs               Tail the bridge log"
         echo "  inbox              Show current inbox contents"
         echo "  history [N]        Show last N history entries (default: 20)"
+        echo "  enable-session     Enable Slack for this session (start + send + register)"
+        echo "  disable-session    Disable Slack for this session (clear inbox + notify)"
+        echo "  check-inbox        Poll inbox with double-read (30s sleep). Prints JSON or nothing."
+        echo "  clear-inbox        Clear the session inbox file"
         echo "  setup-keychain     Store tokens in macOS Keychain (migrate from config.json)"
         echo "  clear-keychain     Remove tokens from macOS Keychain"
         ;;
