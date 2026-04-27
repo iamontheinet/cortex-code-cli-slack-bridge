@@ -122,7 +122,3 @@ coco-bridge <command>
 - **Notify** (`cortex_slack_bridge.notify`): Sends messages/confirmations to Slack, registers active session on each call
 - **IPC**: `~/.cortex-slack-bridge/inbox_<session_id>.json` -- bridge writes, CoCo reads
 - **Audit log**: `~/.cortex-slack-bridge/history.jsonl` -- append-only JSONL of all messages
-
-## License
-
-MIT
